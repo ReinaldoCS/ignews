@@ -21,25 +21,28 @@ interface User {
 // eslint-disable-next-line import/no-anonymous-default-export
 export default  async (request: NextApiRequest, response: NextApiResponse) => {
 
-  const session = await getSession({ req: request });
+  if (request.method === 'POST') {
 
-  const user = await fauna.query<User>(
-    q.Get(
-      q.Match(
-        q.Index('user_by_email'),
-        q.Casefold(session.user.email)
+
+    const session = await getSession({ req: request });
+
+    const user = await fauna.query<User>(
+      q.Get(
+        q.Match(
+          q.Index('user_by_email'),
+          q.Casefold(session.user.email)
+        )
       )
     )
-  )
 
-  let stripeCustomerId = user.data.stripe_customer_id;
+    let stripeCustomerId = user.data.stripe_customer_id;
 
-  if(!stripeCustomerId) {
-    const stripeCustomer = await stripe.customers.create({
-      email: session.user.email,
-      // metadata
-    })
-  
+    if (!stripeCustomerId) {
+      const stripeCustomer = await stripe.customers.create({
+        email: session.user.email,
+        // metadata
+      })
+    
     await fauna.query(
       q.Update(
         q.Ref(q.Collection('users'), user.ref.id),
@@ -54,22 +57,21 @@ export default  async (request: NextApiRequest, response: NextApiResponse) => {
     stripeCustomerId = stripeCustomer.id;
   }
 
+  const stripeCheckoutSession = await stripe.checkout.sessions.create({
+    success_url: process.env.STIPE_SUCCESS_URL,
+    cancel_url: process.env.STIPE_CANCEL_URL,
+    line_items: [
+      { price: process.env.PRODUCT_ID, quantity: 1 }
+    ],
+    payment_method_types: ['card'],
+    billing_address_collection: 'required',
+    allow_promotion_codes: true,
+    mode: 'subscription',
+    customer: stripeCustomerId,
+  });
 
-
-  if(request.method === 'POST') {
-    const stripeCheckoutSession = await stripe.checkout.sessions.create({
-      success_url: process.env.STIPE_SUCCESS_URL,
-      cancel_url: process.env.STIPE_CANCEL_URL,
-      line_items: [
-        { price: process.env.PRODUCT_ID, quantity: 1 }
-      ],
-      payment_method_types: ['card'],
-      billing_address_collection: 'required',
-      allow_promotion_codes: true,
-      mode: 'subscription',
-      customer: stripeCustomerId,
-    });
     return response.status(200).json({ sessionId: stripeCheckoutSession.id });
+
   } else {
     response.setHeader('Allow', 'POST');
     response.status(405).end('Method not allowed');
